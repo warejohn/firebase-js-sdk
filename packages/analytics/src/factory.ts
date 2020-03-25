@@ -18,7 +18,8 @@
 import {
   FirebaseAnalytics,
   Gtag,
-  SettingsOptions
+  SettingsOptions,
+  DynamicConfig
 } from '@firebase/analytics-types';
 import {
   logEvent,
@@ -28,27 +29,33 @@ import {
   setAnalyticsCollectionEnabled
 } from './functions';
 import {
-  initializeGAId,
   insertScriptTag,
   getOrCreateDataLayer,
   wrapOrCreateGtag,
   findGtagScriptOnPage
 } from './helpers';
-import { ANALYTICS_ID_FIELD } from './constants';
 import { AnalyticsError, ERROR_FACTORY } from './errors';
 import { FirebaseApp } from '@firebase/app-types';
 import { FirebaseInstallations } from '@firebase/installations-types';
-import { fetchDynamicConfig, getMeasurementId } from './get-config';
+import { initializeIds } from './initialize-ids';
+import { logger } from './logger';
 
 /**
  * Maps appId to full initialization promise.
  */
-let fidPromisesMap: { [appId: string]: Promise<void> } = {};
+let initializationPromisesMap: {
+  [appId: string]: Promise<string>; // Promise contains measurement ID string.
+} = {};
 
 /**
- * Maps appId to measurementId fetch promises.
+ * List of dynamic config fetch promises.
  */
-let measurementIdPromisesMap: { [appId: string]: Promise<string> } = {};
+let dynamicConfigPromisesList: Array<Promise<DynamicConfig>> = [];
+
+/**
+ * Maps fetched measurementIds to appId.
+ */
+const measurementIdToAppId: { [measurementId: string]: string } = {};
 
 /**
  * Name for window global data layer array used by GA: defaults to 'dataLayer'.
@@ -83,10 +90,12 @@ let globalInitDone: boolean = false;
  */
 export function resetGlobalVars(
   newGlobalInitDone = false,
-  newGaInitializedPromise = {}
+  newInitializationPromisesMap = {},
+  newDynamicPromises = []
 ): void {
   globalInitDone = newGlobalInitDone;
-  fidPromisesMap = newGaInitializedPromise;
+  initializationPromisesMap = newInitializationPromisesMap;
+  dynamicConfigPromisesList = newDynamicPromises;
   dataLayerName = 'dataLayer';
   gtagName = 'gtag';
 }
@@ -94,9 +103,13 @@ export function resetGlobalVars(
 /**
  * For testing
  */
-export function getGlobalVars(): { fidPromisesMap: { [gaId: string]: Promise<void> }} {
+export function getGlobalVars(): {
+  initializationPromisesMap: { [gaId: string]: Promise<string> };
+  dynamicConfigPromisesList: Array<Promise<DynamicConfig>>;
+} {
   return {
-    fidPromisesMap
+    initializationPromisesMap,
+    dynamicConfigPromisesList
   };
 }
 
@@ -121,18 +134,16 @@ export function factory(
   app: FirebaseApp,
   installations: FirebaseInstallations
 ): FirebaseAnalytics {
-  // const analyticsId = app.options[ANALYTICS_ID_FIELD];
-  // if (!analyticsId) {
-  //   throw ERROR_FACTORY.create(AnalyticsError.NO_GA_ID);
-  // }
   const appId = app.options.appId;
   if (!appId) {
-    //TODO: Change to AppId error
-    throw ERROR_FACTORY.create(AnalyticsError.NO_GA_ID);
+    throw ERROR_FACTORY.create(AnalyticsError.NO_APP_ID);
+  }
+
+  if (!app.options.apiKey) {
+    throw ERROR_FACTORY.create(AnalyticsError.NO_API_KEY);
   }
 
   if (initializationPromisesMap[appId] != null) {
-    //TODO: Change to AppId error?
     throw ERROR_FACTORY.create(AnalyticsError.ALREADY_EXISTS, {
       id: appId
     });
@@ -150,7 +161,8 @@ export function factory(
 
     const { wrappedGtag, gtagCore } = wrapOrCreateGtag(
       initializationPromisesMap,
-      measurementIdPromisesMap,
+      dynamicConfigPromisesList,
+      measurementIdToAppId,
       dataLayerName,
       gtagName
     );
@@ -160,32 +172,58 @@ export function factory(
     globalInitDone = true;
   }
   // Async but non-blocking.
-  measurementIdPromisesMap[appId] = getMeasurementId(app);
-  initializationPromisesMap[appId] = initializeGAId(measurementIdPromisesMap[appId], installations, gtagCoreFunction);
-  // fidPromisesMap[appId] = initializeGAId(
-  //   app,
-  //   installations,
-  //   gtagCoreFunction
-  // );
+  // This map reflects the completion state of all promises for each appId.
+  initializationPromisesMap[appId] = initializeIds(
+    app,
+    dynamicConfigPromisesList,
+    measurementIdToAppId,
+    installations,
+    gtagCoreFunction
+  );
 
   const analyticsInstance: FirebaseAnalytics = {
     app,
-    logEvent: (eventName, eventParams, options) =>
+    // Public methods return void for API simplicity and to better match gtag,
+    // while internal implementations return promises.
+    logEvent: (eventName, eventParams, options) => {
       logEvent(
         wrappedGtagFunction,
-        measurementId,
+        initializationPromisesMap[appId],
         eventName,
         eventParams,
         options
-      ),
-    setCurrentScreen: (screenName, options) =>
-      setCurrentScreen(wrappedGtagFunction, measurementId, screenName, options),
-    setUserId: (id, options) =>
-      setUserId(wrappedGtagFunction, measurementId, id, options),
-    setUserProperties: (properties, options) =>
-      setUserProperties(wrappedGtagFunction, measurementId, properties, options),
-    setAnalyticsCollectionEnabled: enabled =>
-      setAnalyticsCollectionEnabled(measurementId, enabled)
+      ).catch(e => logger.error(e));
+    },
+    setCurrentScreen: (screenName, options) => {
+      setCurrentScreen(
+        wrappedGtagFunction,
+        initializationPromisesMap[appId],
+        screenName,
+        options
+      ).catch(e => logger.error(e));
+    },
+    setUserId: (id, options) => {
+      setUserId(
+        wrappedGtagFunction,
+        initializationPromisesMap[appId],
+        id,
+        options
+      ).catch(e => logger.error(e));
+    },
+    setUserProperties: (properties, options) => {
+      setUserProperties(
+        wrappedGtagFunction,
+        initializationPromisesMap[appId],
+        properties,
+        options
+      ).catch(e => logger.error(e));
+    },
+    setAnalyticsCollectionEnabled: enabled => {
+      setAnalyticsCollectionEnabled(
+        initializationPromisesMap[appId],
+        enabled
+      ).catch(e => logger.error(e));
+    }
   };
 
   return analyticsInstance;
