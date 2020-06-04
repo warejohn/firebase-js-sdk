@@ -356,19 +356,26 @@ export class FirestoreClient {
 
   terminate(): Promise<void> {
     return this.asyncQueue.enqueueAndInitiateShutdown(async () => {
-      // PORTING NOTE: LocalStore does not need an explicit shutdown on web.
-      if (this.gcScheduler) {
-        this.gcScheduler.stop();
+      try {
+        // PORTING NOTE: LocalStore does not need an explicit shutdown on web.
+        if (this.gcScheduler) {
+          this.gcScheduler.stop();
+        }
+
+        await this.remoteStore.shutdown();
+        // `removeChangeListener` must be called after shutting down the
+        // RemoteStore as it will prevent the RemoteStore from retrieving
+        // auth tokens.
+        this.credentials.removeChangeListener();
+
+        await this.sharedClientState.shutdown();
+        await this.persistence.shutdown();
+      } catch (e) {
+        throw new FirestoreError(
+          Code.UNAVAILABLE,
+          'Firestore shutdown failed. The client is in an undefined state: ' + e
+        );
       }
-
-      await this.remoteStore.shutdown();
-      await this.sharedClientState.shutdown();
-      await this.persistence.shutdown();
-
-      // `removeChangeListener` must be called after shutting down the
-      // RemoteStore as it will prevent the RemoteStore from retrieving
-      // auth tokens.
-      this.credentials.removeChangeListener();
     });
   }
 
