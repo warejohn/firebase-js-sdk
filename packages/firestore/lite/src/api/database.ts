@@ -16,32 +16,22 @@
  */
 
 import * as firestore from '../../';
+import { Settings } from '../../';
 
 import { _getProvider, _removeServiceInstance } from '@firebase/app-exp';
 import { FirebaseApp, _FirebaseService } from '@firebase/app-types-exp';
 import { Provider } from '@firebase/component';
 
 import { Code, FirestoreError } from '../../../src/util/error';
-import { DatabaseId, DatabaseInfo } from '../../../src/core/database_info';
+import { DatabaseId } from '../../../src/core/database_info';
 import { FirebaseAuthInternalName } from '@firebase/auth-interop-types';
 import {
   CredentialsProvider,
   FirebaseCredentialsProvider
 } from '../../../src/api/credentials';
-import {
-  Datastore,
-  newDatastore,
-  terminateDatastore
-} from '../../../src/remote/datastore';
-import { newConnection } from '../../../src/platform/connection';
-import { newSerializer } from '../../../src/platform/serializer';
 import { cast } from './util';
-import { Settings } from '../../';
-
-// settings() defaults:
-export const DEFAULT_HOST = 'firestore.googleapis.com';
-export const DEFAULT_SSL = true;
-export const DEFAULT_FORCE_LONG_POLLING = false; // Used by full SDK
+import { removeDatastore } from './components';
+import { debugAssert } from '../../../src/util/assert';
 
 /**
  * The root reference to the Firestore Lite database.
@@ -49,12 +39,15 @@ export const DEFAULT_FORCE_LONG_POLLING = false; // Used by full SDK
 export class Firestore
   implements firestore.FirebaseFirestore, _FirebaseService {
   readonly _databaseId: DatabaseId;
+  readonly _credentials: CredentialsProvider;
+  readonly _persistenceKey: string = '(lite)';
   private readonly _firebaseApp: FirebaseApp;
-  protected readonly _credentials: CredentialsProvider;
+
+  // docs
+  _terminated?: Promise<void>;
 
   // Assigned via _configureClient()
   protected _settings?: firestore.Settings;
-  private _datastorePromise?: Promise<Datastore>;
 
   constructor(
     app: FirebaseApp,
@@ -88,29 +81,6 @@ export class Firestore
     return this._settings;
   }
 
-  _getDatastore(): Promise<Datastore> {
-    if (!this._datastorePromise) {
-      const settings = this._getSettings();
-      const databaseInfo = this._makeDatabaseInfo(settings.host, settings.ssl);
-      this._datastorePromise = newConnection(databaseInfo).then(connection => {
-        const serializer = newSerializer(databaseInfo.databaseId);
-        return newDatastore(connection, this._credentials, serializer);
-      });
-    }
-
-    return this._datastorePromise;
-  }
-
-  protected _makeDatabaseInfo(host?: string, ssl?: boolean): DatabaseInfo {
-    return new DatabaseInfo(
-      this._databaseId,
-      /* persistenceKey= */ 'unsupported',
-      host ?? DEFAULT_HOST,
-      ssl ?? DEFAULT_SSL,
-      DEFAULT_FORCE_LONG_POLLING
-    );
-  }
-
   private static databaseIdFromApp(app: FirebaseApp): DatabaseId {
     if (!Object.prototype.hasOwnProperty.apply(app.options, ['projectId'])) {
       throw new FirestoreError(
@@ -123,8 +93,24 @@ export class Firestore
   }
 
   delete(): Promise<void> {
-    return terminate(this);
+    if (!this._terminated) {
+      this._terminated = this._terminate();
+    }
+    return this._terminated;
   }
+
+  protected _terminate(): Promise<void> {
+    debugAssert(!this._terminated, 'fff');
+    return removeDatastore(this);
+  }
+}
+
+export function terminate(
+  firestore: firestore.FirebaseFirestore
+): Promise<void> {
+  _removeServiceInstance(firestore.app, 'firestore/lite');
+  const firestoreClient = cast(firestore, Firestore);
+  return firestoreClient.delete();
 }
 
 export function initializeFirestore(
@@ -141,14 +127,4 @@ export function initializeFirestore(
 
 export function getFirestore(app: FirebaseApp): Firestore {
   return _getProvider(app, 'firestore/lite').getImmediate() as Firestore;
-}
-
-export function terminate(
-  firestore: firestore.FirebaseFirestore
-): Promise<void> {
-  _removeServiceInstance(firestore.app, 'firestore/lite');
-  const firestoreClient = cast(firestore, Firestore);
-  return firestoreClient
-    ._getDatastore()
-    .then(datastore => terminateDatastore(datastore));
 }
