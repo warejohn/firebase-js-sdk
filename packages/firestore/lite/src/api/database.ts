@@ -16,7 +16,6 @@
  */
 
 import * as firestore from '../../';
-import { Settings } from '../../';
 
 import { _getProvider, _removeServiceInstance } from '@firebase/app-exp';
 import { FirebaseApp, _FirebaseService } from '@firebase/app-types-exp';
@@ -41,29 +40,33 @@ export class Firestore
   readonly _databaseId: DatabaseId;
   readonly _credentials: CredentialsProvider;
   readonly _persistenceKey: string = '(lite)';
-  private readonly _firebaseApp: FirebaseApp;
-
-  // docs
-  _terminated?: Promise<void>;
 
   // Assigned via _configureClient()
   protected _settings?: firestore.Settings;
+  private _settingsFrozen = false;
+
+  // A task that is assigned when the terminate() is invoked and resolved when
+  // all components have shut down.
+  private _terminateTask?: Promise<void>;
 
   constructor(
-    app: FirebaseApp,
+    readonly app: FirebaseApp,
     authProvider: Provider<FirebaseAuthInternalName>
   ) {
-    this._firebaseApp = app;
     this._databaseId = Firestore.databaseIdFromApp(app);
     this._credentials = new FirebaseCredentialsProvider(authProvider);
   }
 
-  get app(): FirebaseApp {
-    return this._firebaseApp;
+  get _initialized(): boolean {
+    return this._settingsFrozen;
+  }
+
+  get _terminated(): boolean {
+    return !this._terminateTask;
   }
 
   _configureClient(settings: firestore.Settings): void {
-    if (this._settings) {
+    if (this._settingsFrozen) {
       throw new FirestoreError(
         Code.FAILED_PRECONDITION,
         'Firestore has already been started and its settings can no longer ' +
@@ -71,14 +74,15 @@ export class Firestore
           'getFirestore().'
       );
     }
+    this._settingsFrozen = true;
     this._settings = settings;
   }
 
-  _getSettings(): Settings {
+  _getSettings(): firestore.Settings {
     if (!this._settings) {
-      this._settings = {};
+      this._configureClient({});
     }
-    return this._settings;
+    return this._settings!;
   }
 
   private static databaseIdFromApp(app: FirebaseApp): DatabaseId {
@@ -93,24 +97,23 @@ export class Firestore
   }
 
   delete(): Promise<void> {
-    if (!this._terminated) {
-      this._terminated = this._terminate();
+    if (!this._terminateTask) {
+      this._terminateTask = this._terminate();
     }
-    return this._terminated;
+    return this._terminateTask;
   }
 
+  /**
+   * Terminates all components used by this client. Subclasses can override
+   * this method to clean up their own dependencies, but must also call this
+   * method.
+   *
+   * Only ever called once.
+   */
   protected _terminate(): Promise<void> {
-    debugAssert(!this._terminated, 'fff');
+    debugAssert(!this._terminated, 'Cannot invoke _terminate() more than once');
     return removeDatastore(this);
   }
-}
-
-export function terminate(
-  firestore: firestore.FirebaseFirestore
-): Promise<void> {
-  _removeServiceInstance(firestore.app, 'firestore/lite');
-  const firestoreClient = cast(firestore, Firestore);
-  return firestoreClient.delete();
 }
 
 export function initializeFirestore(
@@ -127,4 +130,12 @@ export function initializeFirestore(
 
 export function getFirestore(app: FirebaseApp): Firestore {
   return _getProvider(app, 'firestore/lite').getImmediate() as Firestore;
+}
+
+export function terminate(
+  firestore: firestore.FirebaseFirestore
+): Promise<void> {
+  _removeServiceInstance(firestore.app, 'firestore/lite');
+  const firestoreClient = cast(firestore, Firestore);
+  return firestoreClient.delete();
 }

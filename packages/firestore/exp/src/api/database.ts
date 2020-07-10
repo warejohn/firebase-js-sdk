@@ -34,14 +34,12 @@ import { Code, FirestoreError } from '../../../src/util/error';
 import { Deferred } from '../../../src/util/promise';
 import { LruParams } from '../../../src/local/lru_garbage_collector';
 import { CACHE_SIZE_UNLIMITED } from '../../../src/api/database';
-import { DatabaseId } from '../../../src/core/database_info';
 import {
   indexedDbClearPersistence,
   indexedDbStoragePrefix
 } from '../../../src/local/indexeddb_persistence';
 import {
   getFirestoreClient,
-  hasFirestoreClient,
   initializeFirestoreClient,
   removeFirestoreClient
 } from './components';
@@ -72,36 +70,6 @@ export class Firestore extends LiteFirestore
       this._settings = {};
     }
     return this._settings;
-  }
-
-  /**
-   * Verifies that the client is not running and clears persistence by invoking
-   * `delegate` on the async queue.
-   *
-   * @param delegate A function that clears the clients
-   * backing storage.
-   */
-  _clearPersistence(
-    delegate: (databaseId: DatabaseId, persistenceKey: string) => Promise<void>
-  ): Promise<void> {
-    if (hasFirestoreClient(this)) {
-      throw new FirestoreError(
-        Code.FAILED_PRECONDITION,
-        'Persistence can only be cleared before a Firestore instance is ' +
-          'initialized or after it is terminated.'
-      );
-    }
-
-    const deferred = new Deferred<void>();
-    this._queue.enqueueAndForgetEvenAfterShutdown(async () => {
-      try {
-        await delegate(this._databaseId, this._persistenceKey);
-        deferred.resolve();
-      } catch (e) {
-        deferred.reject(e);
-      }
-    });
-    return deferred.promise;
   }
 
   async _terminate(): Promise<void> {
@@ -148,8 +116,10 @@ export function enableIndexedDbPersistence(
     new IndexedDbComponentProvider(),
     {
       durable: true,
+      synchronizeTabs: false,
       cacheSizeBytes:
-        settings.cacheSizeBytes || LruParams.DEFAULT_CACHE_SIZE_BYTES
+        settings.cacheSizeBytes || LruParams.DEFAULT_CACHE_SIZE_BYTES,
+      forceOwningTab: false
     }
   );
 }
@@ -166,20 +136,39 @@ export function enableMultiTabIndexedDbPersistence(
       durable: true,
       synchronizeTabs: true,
       cacheSizeBytes:
-        settings.cacheSizeBytes || LruParams.DEFAULT_CACHE_SIZE_BYTES
+        settings.cacheSizeBytes || LruParams.DEFAULT_CACHE_SIZE_BYTES,
+      forceOwningTab: false
     }
-  ).then(() => {});
+  );
 }
 
 export function clearIndexedDbPersistence(
   firestore: firestore.FirebaseFirestore
 ): Promise<void> {
   const firestoreImpl = cast(firestore, Firestore);
-  return firestoreImpl._clearPersistence((databaseId, persistenceKey) => {
-    return indexedDbClearPersistence(
-      indexedDbStoragePrefix(databaseId, persistenceKey)
+  if (firestoreImpl._initialized && !firestoreImpl._terminated) {
+    throw new FirestoreError(
+      Code.FAILED_PRECONDITION,
+      'Persistence can only be cleared before a Firestore instance is ' +
+        'initialized or after it is terminated.'
     );
+  }
+
+  const deferred = new Deferred<void>();
+  firestoreImpl._queue.enqueueAndForgetEvenAfterShutdown(async () => {
+    try {
+      await indexedDbClearPersistence(
+        indexedDbStoragePrefix(
+          firestoreImpl._databaseId,
+          firestoreImpl._persistenceKey
+        )
+      );
+      deferred.resolve();
+    } catch (e) {
+      deferred.reject(e);
+    }
   });
+  return deferred.promise;
 }
 
 export function waitForPendingWrites(

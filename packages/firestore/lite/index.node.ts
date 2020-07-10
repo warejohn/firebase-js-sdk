@@ -23,7 +23,8 @@ import { Component, ComponentType } from '@firebase/component';
 export {
   Firestore as FirebaseFirestore,
   initializeFirestore,
-  getFirestore
+  getFirestore,
+  terminate
 } from './src/api/database';
 
 export {
@@ -94,4 +95,3 @@ export function registerFirestore(): void {
 }
 
 registerFirestore();
-export { terminate } from './src/api/database';

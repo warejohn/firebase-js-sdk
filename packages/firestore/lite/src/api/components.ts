@@ -25,12 +25,25 @@ import { newSerializer } from '../../../src/platform/serializer';
 import { Firestore } from './database';
 import { DatabaseInfo } from '../../../src/core/database_info';
 
-const datastoreInstances = new Map<Firestore, Promise<Datastore>>();
-
 // settings() defaults:
 export const DEFAULT_HOST = 'firestore.googleapis.com';
 export const DEFAULT_SSL = true;
 
+// The components module manages the lifetime of dependencies of the Firestore
+// client. Dependencies can be lazily constructed and only one exists per
+// Firestore instance.
+
+/**
+ * An instance map that ensures only one Datastore exists per Firestore
+ * instance.
+ */
+const datastoreInstances = new Map<Firestore, Promise<Datastore>>();
+
+/**
+ * Returns an initialized and started Datastore for the given Firestore
+ * instance. Callers must invoke removeDatastore() when the Firestore
+ * instance is terminated.
+ */
 export function getDatastore(firestore: Firestore): Promise<Datastore> {
   if (!datastoreInstances.has(firestore)) {
     const settings = firestore._getSettings();
@@ -50,6 +63,10 @@ export function getDatastore(firestore: Firestore): Promise<Datastore> {
   return datastoreInstances.get(firestore)!;
 }
 
+/**
+ * Removes and terminates the Datastore for the given instance if it has
+ * been started.
+ */
 export async function removeDatastore(firestore: Firestore): Promise<void> {
   const datastore = await datastoreInstances.get(firestore);
   if (datastore) {

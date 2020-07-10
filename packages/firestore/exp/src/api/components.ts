@@ -26,13 +26,20 @@ import {
   ComponentProvider,
   MemoryComponentProvider
 } from '../../../src/core/component_provider';
+import { DEFAULT_HOST, DEFAULT_SSL } from '../../../lite/src/api/components';
 
+/**
+ * An instance map that ensures only one FirestoreClient exists per Firestore
+ * instance.
+ */
 const firestoreClientInstances = new Map<Firestore, Promise<FirestoreClient>>();
 
-// settings() defaults:
-export const DEFAULT_HOST = 'firestore.googleapis.com';
-export const DEFAULT_SSL = true;
-
+/**
+ * Returns the initialized and started FirestoreClient for the given Firestore
+ * instance. If none exists, creates a new FirestoreClient with memory
+ * persistence. Callers must invoke removeFirestoreClient() when the Firestore
+ * instance is terminated.
+ */
 export function getFirestoreClient(
   firestore: Firestore
 ): Promise<FirestoreClient> {
@@ -42,7 +49,6 @@ export function getFirestoreClient(
       'The client has already been terminated.'
     );
   }
-
   if (!firestoreClientInstances.has(firestore)) {
     // eslint-disable-next-line @typescript-eslint/no-floating-promises
     initializeFirestoreClient(firestore, new MemoryComponentProvider(), {
@@ -52,12 +58,21 @@ export function getFirestoreClient(
   return firestoreClientInstances.get(firestore)!;
 }
 
+/**
+ * Creates a new FirestoreClient for the given Firestore instance. Throws if the
+ * instance exists.
+ *
+ * @param firestore The Firestore instance for which to create the
+ * FirestoreClient.
+ * @param componentProvider The component provider to use.
+ * @param persistenceSettings Settings for the component provider.
+ */
 export function initializeFirestoreClient(
   firestore: Firestore,
   componentProvider: ComponentProvider,
   persistenceSettings: PersistenceSettings
 ): Promise<void> {
-  if (firestore._terminated || hasFirestoreClient(firestore)) {
+  if (firestore._initialized) {
     throw new FirestoreError(
       Code.FAILED_PRECONDITION,
       'Firestore has already been started and persistence can no longer ' +
@@ -69,7 +84,7 @@ export function initializeFirestoreClient(
   const settings = firestore._getSettings();
   const databaseInfo = new DatabaseInfo(
     firestore._databaseId,
-    /* persistenceKey= */ firestore._persistenceKey,
+    firestore._persistenceKey,
     settings.host ?? DEFAULT_HOST,
     settings.ssl ?? DEFAULT_SSL,
     /** forceLongPolling= */ false
@@ -90,10 +105,10 @@ export function initializeFirestoreClient(
   return initializationPromise;
 }
 
-export function hasFirestoreClient(firestore: Firestore): boolean {
-  return firestoreClientInstances.has(firestore);
-}
-
+/**
+ * Removes and terminates the FirestoreClient for the given instance if it has
+ * been started.
+ */
 export async function removeFirestoreClient(
   firestore: Firestore
 ): Promise<void> {
