@@ -22,7 +22,10 @@ import * as type from '../src/implementation/type';
 import { Headers, XhrIo } from '../src/implementation/xhrio';
 import { XhrIoPool } from '../src/implementation/xhriopool';
 import { SendHook, StringHeaders, TestingXhrIo } from './xhrio';
-import { FirebaseAuthInternal } from '@firebase/auth-interop-types';
+import {
+  FirebaseAuthInternalName,
+  FirebaseAuthTokenData
+} from '@firebase/auth-interop-types';
 import {
   Provider,
   ComponentContainer,
@@ -36,7 +39,7 @@ export const fakeApp = makeFakeApp();
 export const fakeAuthProvider = makeFakeAuthProvider({
   accessToken: authToken
 });
-export const emptyAuthProvider = new Provider<FirebaseAuthInternal>(
+export const emptyAuthProvider = new Provider<FirebaseAuthInternalName>(
   'auth-internal',
   new ComponentContainer('storage-container')
 );
@@ -54,7 +57,7 @@ export function makeFakeApp(bucketArg?: string): FirebaseApp {
 
 export function makeFakeAuthProvider(
   token: {} | null
-): Provider<FirebaseAuthInternal> {
+): Provider<FirebaseAuthInternalName> {
   const provider = new Provider(
     'auth-internal',
     new ComponentContainer('storage-container')
@@ -63,13 +66,16 @@ export function makeFakeAuthProvider(
     new Component(
       'auth-internal',
       () => ({
-        getToken: async () => token
+        getToken: async () => token as FirebaseAuthTokenData | null,
+        getUid: () => null,
+        addAuthTokenListener: () => {},
+        removeAuthTokenListener: () => {}
       }),
       ComponentType.PRIVATE
     )
   );
 
-  return provider as Provider<FirebaseAuthInternal>;
+  return provider as Provider<FirebaseAuthInternalName>;
 }
 
 export function makePool(sendHook: SendHook | null): XhrIoPool {
