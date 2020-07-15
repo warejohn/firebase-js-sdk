@@ -25,7 +25,15 @@ import {
   Observer,
   QueryListener
 } from '../../../src/core/event_manager';
-import { canonifyQuery, Query, queryEquals } from '../../../src/core/query';
+import {
+  canonifyQuery,
+  LimitType,
+  newQueryForPath,
+  Query,
+  queryEquals,
+  newQuery,
+  queryToTarget
+} from '../../../src/core/query';
 import { SnapshotVersion } from '../../../src/core/snapshot_version';
 import { SyncEngine } from '../../../src/core/sync_engine';
 import { TargetId } from '../../../src/core/types';
@@ -85,7 +93,6 @@ import {
   orderBy,
   patchMutation,
   path,
-  query,
   setMutation,
   stringFromBase64String,
   TestSnapshotVersion,
@@ -128,25 +135,22 @@ const ARBITRARY_SEQUENCE_NUMBER = 2;
 
 export function parseQuery(querySpec: string | SpecQuery): Query {
   if (typeof querySpec === 'string') {
-    return query(querySpec);
+    return newQueryForPath(path(querySpec));
   } else {
-    let query = new Query(path(querySpec.path), querySpec.collectionGroup);
-    if (querySpec.limit) {
-      query =
-        querySpec.limitType === 'LimitToFirst'
-          ? query.withLimitToFirst(querySpec.limit)
-          : query.withLimitToLast(querySpec.limit);
-    }
-    if (querySpec.filters) {
-      querySpec.filters.forEach(([field, op, value]) => {
-        query = query.addFilter(filter(field, op, value));
-      });
-    }
-    if (querySpec.orderBys) {
-      querySpec.orderBys.forEach(([filter, direction]) => {
-        query = query.addOrderBy(orderBy(filter, direction));
-      });
-    }
+    const query = newQuery(
+      path(querySpec.path),
+      querySpec.collectionGroup ?? null,
+      (querySpec.orderBys ?? []).map(([filter, direction]) =>
+        orderBy(filter, direction)
+      ),
+      (querySpec.filters ?? []).map(([field, op, value]) =>
+        filter(field, op, value)
+      ),
+      querySpec.limit ?? null,
+      LimitType.First,
+      /* startAt= */ null,
+      /* endAt= */ null
+    );
     return query;
   }
 }
@@ -952,7 +956,7 @@ abstract class TestRunner {
       const expectedTarget = toTarget(
         this.serializer,
         new TargetData(
-          parseQuery(expected.queries[0]).toTarget(),
+          queryToTarget(parseQuery(expected.queries[0])),
           targetId,
           TargetPurpose.Listen,
           ARBITRARY_SEQUENCE_NUMBER,
